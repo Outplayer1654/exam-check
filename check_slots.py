@@ -58,7 +58,7 @@ def request(method, path, body=None):
     try:
         with opener.open(req, timeout=30) as r:
             text = r.read().decode("utf-8", "replace")
-            return r.status, (json.loads(text) if text.strip() else None)
+            return r.status, (json.loads(text) if text.lstrip().startswith(chr(123)) else None)
     except urllib.error.HTTPError as e:
         return e.code, None
 
