@@ -1,0 +1,42 @@
+name: Проверка дат экзамена
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # каждые 10 минут (GitHub иногда запускает с задержкой)
+  workflow_dispatch:          # кнопка "Run workflow" для ручного запуска
+
+concurrency:
+  group: exam-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      # Память между запусками: чтобы не присылать одно и то же каждые 10 минут
+      - name: Восстановить состояние
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: exam-state-${{ github.run_id }}
+          restore-keys: exam-state-
+
+      - name: Проверить свободные даты
+        env:
+          DISPO_NO_REGISTRE: ${{ secrets.DISPO_NO_REGISTRE }}
+          DISPO_BIRTHDAY: ${{ secrets.DISPO_BIRTHDAY }}
+          DISPO_RDV_ID: ${{ secrets.DISPO_RDV_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          END_DATE: "2027-03-31"
+        run: python3 check_slots.py
+
+      - name: Сохранить состояние
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: exam-state-${{ github.run_id }}
