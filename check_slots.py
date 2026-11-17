@@ -27,6 +27,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# ===== КОГДА ВЫ МОЖЕТЕ (включительно). Бот сообщает только о датах внутри этих периодов. =====
+PERIODS = [
+    ("2027-01-11", "2027-01-24"),
+    ("2027-01-30", "2027-02-14"),
+    ("2027-02-20", "2027-03-26"),
+]
+# ==============================================================================================
+
 BASE = "https://ge.ch/tradispoweb_public"
 PAGE_URL = BASE + "/ui/app/init/conduite/prive/rendez-vous/{rdv}"
 try:
@@ -78,7 +86,8 @@ def login(no_registre, birthday):
     return False
 
 
-def fetch_slots(rdv_id, lieu, end_date):
+def fetch_slots(rdv_id, lieu, periods):
+    end_date = max(b for _, b in periods)
     slots = []
     base = dt.datetime.now(dt.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     for _ in range(60):  # не больше 60 недель
@@ -102,7 +111,7 @@ def fetch_slots(rdv_id, lieu, end_date):
             raise RuntimeError(f"Сайт вернул ошибку: {data.get('retCode')} {data.get('retMessage')}")
         for s in data.get("listeJourHeureLibreDispo") or []:
             day = dt.datetime.fromtimestamp(s["jour"] / 1000, TZ).date()
-            if day <= end_date:
+            if any(a <= day <= b for a, b in periods):
                 slots.append((day, int(s.get("heure", 0)), int(s.get("minute", 0))))
         week_start = dt.datetime.fromtimestamp((data.get("weekDay") or base.timestamp() * 1000) / 1000, dt.timezone.utc)
         base = max(base, week_start) + dt.timedelta(days=7)
@@ -140,7 +149,8 @@ def main():
     birthday = env("DISPO_BIRTHDAY", required=True)
     rdv_id = env("DISPO_RDV_ID", required=True)
     lieu = env("LIEU", "SANCAROUGE")
-    end_date = dt.date.fromisoformat(env("END_DATE", "2027-03-31"))
+    periods = [(dt.date.fromisoformat(a), dt.date.fromisoformat(b)) for a, b in PERIODS]
+    end_date = max(b for _, b in periods)
     state_path = env("STATE_FILE", "state.json")
     state = load_state(state_path)
     link = PAGE_URL.format(rdv=rdv_id)
@@ -149,7 +159,7 @@ def main():
         if not login(no_registre, birthday):
             raise RuntimeError("Не удалось войти: проверьте номер регистра и дату рождения "
                                "(или на сайте включили капчу)")
-        slots = fetch_slots(rdv_id, lieu, end_date)
+        slots = fetch_slots(rdv_id, lieu, periods)
     except Exception as e:
         msg = f"⚠️ Проверка экзамена не сработала: {e}"
         print(msg)
