@@ -36,6 +36,8 @@ PERIODS = [
 ]
 # ==============================================================================================
 
+FAIL_ALERT_AFTER = 6  # сообщать об ошибке, только если она повторилась 6 раз подряд (~1 час)
+
 BASE = "https://ge.ch/tradispoweb_public"
 PAGE_URL = BASE + "/ui/app/init/conduite/prive/rendez-vous/{rdv}"
 try:
@@ -162,15 +164,23 @@ def main():
                                "(или на сайте включили капчу)")
         slots = fetch_slots(rdv_id, lieu, periods)
     except Exception as e:
-        msg = f"⚠️ Проверка экзамена не сработала: {e}"
-        print(msg)
-        if state.get("last_error") != str(e):  # про одну и ту же ошибку сообщаем один раз
-            telegram(msg + f"\n{link}")
-            state["last_error"] = str(e)
-            save_state(state_path, state)
+        fails = state.get("fail_count", 0) + 1
+        state["fail_count"] = fails
+        state["last_error"] = str(e)
+        print(f"::error::Ошибка (подряд: {fails}): {e}")  # видно в Annotations на GitHub без входа
+        # Короткие сбои сайта (ночные работы, HTTP 500) не сообщаем.
+        # Пишем один раз, когда ошибки идут подряд ~1 час (FAIL_ALERT_AFTER запусков по 10 минут).
+        if fails == FAIL_ALERT_AFTER:
+            telegram(f"⚠️ Проверка экзамена не работает уже около часа ({fails} раз подряд).\n"
+                     f"Последняя ошибка: {e}\n{link}")
+            state["alerted"] = True
+        save_state(state_path, state)
         sys.exit(1)
 
-    state.pop("last_error", None)
+    if state.get("alerted"):
+        telegram(f"✅ Проверка экзамена снова работает (было {state.get('fail_count', 0)} ошибок подряд).")
+    for k in ("fail_count", "last_error", "alerted"):
+        state.pop(k, None)
     print(f"Проверено до {end_date:%d.%m.%Y}: свободных слотов {len(slots)}")
 
     if slots:
