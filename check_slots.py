@@ -37,6 +37,7 @@ PERIODS = [
 # ==============================================================================================
 
 FAIL_ALERT_AFTER = 6  # сообщать об ошибке, только если она повторилась 6 раз подряд (~1 час)
+RETRY_DELAY = int(os.environ.get("RETRY_DELAY", "30"))  # пауза перед второй попыткой, секунд
 
 BASE = "https://ge.ch/tradispoweb_public"
 PAGE_URL = BASE + "/ui/app/init/conduite/prive/rendez-vous/{rdv}"
@@ -89,7 +90,12 @@ def login(no_registre, birthday):
     return False
 
 
+STATS = {}
+
+
 def fetch_slots(rdv_id, lieu, periods):
+    STATS.clear()
+    STATS.update(weeks=0, all=[], last_week=None, stop="")
     end_date = max(b for _, b in periods)
     slots = []
     base = dt.datetime.now(dt.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -112,13 +118,17 @@ def fetch_slots(rdv_id, lieu, periods):
             raise RuntimeError(f"Ответ сайта: HTTP {status}")
         if data.get("retCode") not in (None, "0000"):
             raise RuntimeError(f"Сайт вернул ошибку: {data.get('retCode')} {data.get('retMessage')}")
+        STATS["weeks"] += 1
         for s in data.get("listeJourHeureLibreDispo") or []:
             day = dt.datetime.fromtimestamp(s["jour"] / 1000, TZ).date()
+            STATS["all"].append(day)  # все свободные даты, даже вне ваших периодов (для статистики)
             if any(a <= day <= b for a, b in periods):
                 slots.append((day, int(s.get("heure", 0)), int(s.get("minute", 0))))
         week_start = dt.datetime.fromtimestamp((data.get("weekDay") or base.timestamp() * 1000) / 1000, dt.timezone.utc)
         base = max(base, week_start) + dt.timedelta(days=7)
+        STATS["last_week"] = base.date()
         if not data.get("nextWeek") or base.date() > end_date:
+            STATS["stop"] = "сайт дальше не показывает" if not data.get("nextWeek") else "дошли до конца периодов"
             break
         time.sleep(1)  # бережно к сайту
     return sorted(set(slots))
@@ -158,11 +168,21 @@ def main():
     state = load_state(state_path)
     link = PAGE_URL.format(rdv=rdv_id)
 
-    try:
+    def attempt():
         if not login(no_registre, birthday):
             raise RuntimeError("Не удалось войти: проверьте номер регистра и дату рождения "
                                "(или на сайте включили капчу)")
-        slots = fetch_slots(rdv_id, lieu, periods)
+        return fetch_slots(rdv_id, lieu, periods)
+
+    try:
+        try:
+            slots = attempt()
+        except Exception as first:
+            # Сразу вторая попытка: короткие сбои сайта часто проходят за полминуты
+            print(f"::warning::Первая попытка не удалась ({first}), пробую ещё раз через {RETRY_DELAY} с")
+            time.sleep(RETRY_DELAY)
+            cookies.clear()
+            slots = attempt()
     except Exception as e:
         fails = state.get("fail_count", 0) + 1
         state["fail_count"] = fails
@@ -182,6 +202,11 @@ def main():
     for k in ("fail_count", "last_error", "alerted"):
         state.pop(k, None)
     print(f"Проверено до {end_date:%d.%m.%Y}: свободных слотов {len(slots)}")
+    all_days = sorted(set(STATS.get("all", [])))
+    print(f"::notice::В ваших периодах: {len(slots)}. Всего свободных слотов на любые даты: "
+          f"{len(STATS.get('all', []))} (дней: {len(all_days)}"
+          + (f", ближайший {all_days[0]:%d.%m.%Y}, последний {all_days[-1]:%d.%m.%Y}" if all_days else "")
+          + f"). Недель просмотрено: {STATS.get('weeks')}, до {STATS.get('last_week')}; остановка: {STATS.get('stop')}")
 
     if slots:
         lines = [f"• {d:%d.%m.%Y} ({['пн','вт','ср','чт','пт','сб','вс'][d.weekday()]}) {h:02d}:{m:02d}"
